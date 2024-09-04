@@ -1,44 +1,83 @@
 .App {
   max-width: 800px;
   margin: 0 auto;
-  padding: 20px;
-  font-family: Arial, sans-serif;
+  padding: 2rem;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background-color: #f5f5f5;
 }
 
-form {
+.header {
+  text-align: center;
+  margin-bottom: 2rem;
+  color: #333;
+}
+
+.form {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin-bottom: 20px;
+  gap: 1rem;
+  margin-bottom: 2rem;
 }
 
-input, textarea {
-  padding: 10px;
-  font-size: 16px;
+.form-group {
+  display: flex;
+  flex-direction: column;
+}
+
+label {
+  font-weight: bold;
+  margin-bottom: 0.5rem;
+}
+
+input,
+textarea {
+  padding: 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 1rem;
 }
 
 button {
-  padding: 10px;
-  font-size: 16px;
+  padding: 0.5rem 1rem;
   background-color: #007bff;
-  color: white;
+  color: #fff;
   border: none;
+  border-radius: 4px;
+  font-size: 1rem;
   cursor: pointer;
+  transition: background-color 0.3s ease;
+}
+
+button:hover {
+  background-color: #0056b3;
 }
 
 button:disabled {
-  background-color: #cccccc;
+  background-color: #ccc;
+  cursor: not-allowed;
+}
+
+.blog-post,
+.blog-image {
+  background-color: #fff;
+  padding: 1rem;
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  margin-bottom: 2rem;
+}
+
+.blog-post h2,
+.blog-image h2 {
+  margin-bottom: 1rem;
+  color: #333;
+}
+
+.blog-image img {
+  max-width: 100%;
+  height: auto;
 }
 
 .error {
   color: red;
-}
-
-.blog-post, .blog-image {
-  margin-top: 20px;
-}
-
-img {
-  max-width: 100%;
-  height: auto;
+  margin-bottom: 1rem;
 }
