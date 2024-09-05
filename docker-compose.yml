@@ -5,6 +5,6 @@ services:
     volumes:
       - .:/var/task
     environment:
-      - ANTHROPIC_API_KEY=${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}
-      - BRAVE_API_KEY=${BSA6sJ0uK-2qcd2owR3G8anHH5h3KGA}
-      - STABILITY_API_KEY=${sk-gk1IK0GFkGksL4Zb4cR3UOOdQLpzpSIJcyarXXnpIpqZwusD}
+      - ANTHROPIC_API_KEY=${}
+      - BRAVE_API_KEY=${}
+      - STABILITY_API_KEY=${}
