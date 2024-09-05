@@ -1,32 +1,52 @@
 import json
-import anthropic
+import os
+import base64
+import ast
+import re
 import requests
 from bs4 import BeautifulSoup
-import base64
-import os
+from time import sleep
+import anthropic
+import logging
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 ANTHROPIC_API_KEY = os.environ['ANTHROPIC_API_KEY']
-BRAVE_API_KEY = os.environ['BRAVE_API_KEY']
-STABILITY_API_KEY = os.environ['STABILITY_API_KEY']
-
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 MODEL_NAME = "claude-3-opus-20240229"
 
-def get_completion(prompt: str):
-    message = client.messages.create(
-        model=MODEL_NAME,
-        max_tokens=2048,
-        temperature=0.5,
-        system="You are a helpful AI assistant.",
-        messages=[
-            {"role": "user", "content": prompt}
-        ]
-    )
-    return message.content
+BRAVE_API_KEY = os.environ['BRAVE_API_KEY']
+STABILITY_API_KEY = os.environ['STABILITY_API_KEY']
+
+def extract_text(obj):
+    if hasattr(obj, 'text'):
+        return obj.text
+    elif isinstance(obj, str):
+        return obj
+    elif isinstance(obj, list) and all(hasattr(item, 'text') for item in obj):
+        return ' '.join(item.text for item in obj)
+    else:
+        return str(obj)
+
+def get_completion(prompt: str, max_tokens=2048):
+    try:
+        message = client.messages.create(
+            model=MODEL_NAME,
+            max_tokens=max_tokens,
+            temperature=0.5,
+            system="You are a helpful AI assistant.",
+            messages=[
+                {"role": "user", "content": prompt}
+            ]
+        )
+        return extract_text(message.content)
+    except Exception as e:
+        print(f"Error in get_completion: {str(e)}")
+        raise
 
 def generate_search_queries(drug_name: str):
     GENERATE_QUERIES = f"""
-    You are an expert at generating search queries for the Brave search engine.
     Generate three search queries to find top competitors for this drug. Output only the list of queries.
 
     Drug name: {drug_name}
@@ -35,17 +55,30 @@ def generate_search_queries(drug_name: str):
     ["query_1", "query_2", "query_3"]
     """
     
-    response = get_completion(GENERATE_QUERIES)
     try:
-        queries = eval(response)
+        response = get_completion(GENERATE_QUERIES)
+        print(f"Raw response from API: {response}")
+        
+        try:
+            queries = ast.literal_eval(response.strip())
+        except:
+            pattern = r'"([^"]*)"'
+            queries = re.findall(pattern, response)
+        
         if isinstance(queries, list) and all(isinstance(q, str) for q in queries):
+            print(f"Successfully parsed queries: {queries}")
             return queries
         else:
             raise ValueError("Response is not a list of strings")
-    except:
-        print("Error: Invalid response from API")
-        print("Response:", response)
-        return []
+    except Exception as e:
+        print(f"Error in generate_search_queries: {str(e)}")
+        fallback_queries = [
+            f"{drug_name} alternatives",
+            f"drugs similar to {drug_name}",
+            f"{drug_name} competitors"
+        ]
+        print(f"Using fallback queries: {fallback_queries}")
+        return fallback_queries
 
 def get_search_results(search_query: str):
     headers = {"Accept": "application/json", "X-Subscription-Token": BRAVE_API_KEY}
@@ -61,9 +94,13 @@ def get_search_results(search_query: str):
     return response.json().get("web", {}).get("results")
 
 def get_page_content(url: str) -> str:
-    html = requests.get(url).text
-    soup = BeautifulSoup(html, 'html.parser')
-    return soup.get_text(strip=True, separator='\n')
+    try:
+        response = requests.get(url, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        return soup.get_text(strip=True, separator='\n')[:1500]  
+    except Exception as e:
+        print(f"Error fetching content from {url}: {str(e)}")
+        return ""
 
 def find_competitor_drugs(drug_name: str):
     queries = generate_search_queries(drug_name)
@@ -81,8 +118,8 @@ def find_competitor_drugs(drug_name: str):
     
     formatted_search_results = "\n".join(
         [
-            f'<item index="{i+1}">\n<source>{result.get("url")}</source>\n<page_content>\n{get_page_content(result.get("url"))}\n</page_content>\n</item>'
-            for i, result in enumerate(web_search_results[:5])  # Limit to top 5 results
+            f'<item index="{i+1}">\n<source>{result.get("url")}</source>\n<page_content>\n{get_page_content(result.get("url"))}</page_content>\n</item>'
+            for i, result in enumerate(web_search_results[:3])  
         ]
     )
     return formatted_search_results
@@ -97,39 +134,43 @@ def compare_drugs(original_drug: str, original_drug_details: str, competitor_inf
     Competitor Information:
     {competitor_info}
 
-    Please provide a detailed comparison between {original_drug} and its top competitors. Include the following:
-    1. Brief overview of each drug
-    2. Key similarities and differences
-    3. Effectiveness comparisons
-    4. Side effect profiles
-    5. Cost considerations
-    6. Market share and popularity (if available)
-
-    Present this information in a structured format that can be easily used for further analysis.
+    Provide a brief comparison between {original_drug} and its top competitors. Include:
+    1. Key similarities and differences
+    2. Effectiveness comparisons
+    3. Side effect profiles
+    4. Cost considerations (if available)
+    5. Statistics that make {original_drug} outshine its competitors.
+    Keep the comparison concise, focusing on the most important points.
     """
     
-    return get_completion(COMPARE_PROMPT)
+    try:
+        return get_completion(COMPARE_PROMPT, max_tokens=1500)
+    except Exception as e:
+        print(f"Error in compare_drugs: {str(e)}")
+        return f"An error occurred while comparing {original_drug} with its competitors. Please try again later."
 
 def generate_blog_post(drug_name: str, drug_details: str, comparison_data: str):
     BLOG_PROMPT = f"""
-    Using the following information, write an engaging and informative blog post about {drug_name}:
+    Write a concise blog post about {drug_name}. Include:
+    1. Brief introduction and primary uses
+    2. How it works
+    3. Brief comparison with competitors
+    4. Key effectiveness and side effects
+    5. Conclusion
 
     Drug Details: {drug_details}
 
-    Comparison with Competitors: {comparison_data}
+    Comparison Data: {comparison_data}
 
-    The blog post should:
-    1. Introduce {drug_name} and its primary uses
-    2. Discuss its history and development
-    3. Explain how it works
-    4. Compare it with top competitors
-    5. Discuss its effectiveness, side effects, and cost considerations
-    6. Conclude with future prospects or ongoing research related to {drug_name}
-
-    Write in a professional yet accessible style, suitable for a general audience interested in medical information.
+    Keep the post under 1000 words.
     """
     
-    return get_completion(BLOG_PROMPT)
+    try:
+        return get_completion(BLOG_PROMPT, max_tokens=1500)
+    except Exception as e:
+        print(f"Error in generate_blog_post: {str(e)}")
+        return f"An error occurred while generating the blog post for {drug_name}. Please try again later."
+
 
 def gen_image(prompt, height=1024, width=1024, num_samples=1):
     engine_id = "stable-diffusion-v1-6"
@@ -168,108 +209,155 @@ def generate_blog_image(drug_name: str, blog_content: str):
     effectively illustrate the key points of the blog. The image should be informative and 
     visually appealing, suitable for a medical blog. Focus on the drug's primary uses, 
     its comparison with competitors, or a visual representation of its effectiveness.
-    Here is some guidance for getting the best possible images:
+    1. Clarity and Concision: The Foundation of Effective Prompts
+Successful AI art generation hinges on crafting clear, precise, and focused prompts. Think of your prompt as a concise creative brief for the AI.
+Key Principles:
 
-    <image_prompting_advice>
-    Rule 1. Make Your Stable Diffusion Prompts Clear, and Concise
-    Successful AI art generation in Stable Diffusion relies heavily on clear and precise prompts. It's essential to craft problem statements that are both straightforward and focused.
+Eliminate ambiguity
+Be brief yet content-rich
+Ensure each word contributes meaningfully
 
-    Clearly written prompts acts like a guide, pointing the AI towards the intended outcome. Specifically, crafting prompts involves choosing words that eliminate ambiguity and concentrate the AI's attention on producing relevant and striking images.
-    Conciseness in prompt writing is about being brief yet rich in content. This approach not only fits within the technical limits of AI systems but ensures each part of the prompt contributes meaningfully to the final image. Effective prompt creation involves boiling down complex ideas into their essence.
-    Prompt Example:
-    "Minimalist landscape, vast desert under a twilight sky."
-    This prompt exemplifies how a few well-chosen words can paint a vivid picture. The terms 'minimalist' and 'twilight sky' work together to set a specific mood and scene, demonstrating effective prompts creation with brevity.
+Examples:
 
-    Another Example:
-    "Futuristic cityscape, neon lights, and towering skyscrapers."
-    Here, the use of descriptive but concise language creates a detailed setting without overwhelming the AI. This example showcases the importance of balancing detail with succinctness in prompt structuring methods.
+"Minimalist landscape, vast desert under a twilight sky"
+"Futuristic cityscape, neon lights, towering skyscrapers"
 
-    Rule 2. Use Detailed Subjects and Scenes to Make Your Stable Diffusion Prompts More Specific
-    Moving into detailed subject and scene description, the focus is on precision. Here, the use of text weights in prompts becomes important, allowing for emphasis on certain elements within the scene.
+2. Detailed Subjects and Scenes: Adding Depth to Your Vision
+While maintaining concision, use detailed descriptions to create vivid, immersive scenes. Balance precision with creative freedom for the AI.
+Techniques:
 
-    Detailing in a prompt should always serve a clear purpose, such as setting a mood, highlighting an aspect, or defining the setting. The difference between a vague and a detailed prompt can be stark, often leading to a much more impactful AI-generated image. Learning how to add layers of details without overwhelming the AI is crucial.
-    Scene setting is more than just describing physical attributes; it encompasses emotions and atmosphere as well. The aim is to provide prompts that are rich in context and imagery, resulting in more expressive AI art.
-    Prompt Example:
-    "Quiet seaside at dawn, gentle waves, seagulls in the distance."
-    In this prompt, each element adds a layer of detail, painting a serene picture. The words 'quiet', 'dawn', and 'gentle waves' work cohesively to create an immersive scene, showcasing the power of specific prompts crafting.
+Set mood and atmosphere
+Highlight key aspects
+Define the setting without overwhelming
 
-    Another Example:
-    "Ancient forest, moss-covered trees, dappled sunlight filtering through leaves."
-    This prompt is rich in imagery and detail, guiding the AI to generate an image with depth and character. It illustrates how detailed prompts can lead to more nuanced and aesthetically pleasing results.
+Examples:
 
-    Rule 3. Contextualizing Your Prompts: Providing Rich Detail Without Confusion
-    In the intricate world of stable diffusion, the ability to contextualize prompts effectively sets apart the ordinary from the extraordinary. This part of the stable diffusion guide delves into the nuanced approach of incorporating rich details into prompts without leading to confusion, a pivotal aspect of the prompt engineering process.
+"Quiet seaside at dawn, gentle waves, seagulls in distance"
+"Ancient forest, moss-covered trees, dappled sunlight through leaves"
 
-    Contextualizing prompts is akin to painting a picture with words. Each detail added layers depth and texture, making AI-generated images more lifelike and resonant. The art of specific prompts crafting lies in weaving details that are vivid yet coherent.
-    For example, when describing a scene, instead of merely stating: 
-    "a forest."
-    one might say,
+3. Contextualizing Prompts: Painting with Words
+Provide rich context without causing confusion. Think of each detail as a brushstroke adding depth to your digital canvas.
+Strategies:
 
-    "a sunlit forest with towering pines and a carpet of fallen autumn leaves."
-    Other Prompt Examples:
-    "Starry night, silhouette of mountains against a galaxy-filled sky."
-    This prompt offers a clear image while allowing room for the AI’s interpretation, a key aspect of prompt optimization. The mention of 'starry night' and 'galaxy-filled sky' gives just enough context without dictating every aspect of the scene.
+Weave vivid yet coherent details
+Allow room for AI interpretation
+Focus on key elements that define the scene
 
-    Rule 4. Do Not Overload Your Prompt Details
-    While detail is desirable, overloading prompts with excessive information can lead to ambiguous results. This section of the definitive prompt guide focuses on how to strike the perfect balance.
+Example:
+Instead of "a forest," try:
+"Sunlit forest, towering pines, carpet of fallen autumn leaves"
+4. Balancing Detail: Avoiding Prompt Overload
+Strike a balance between descriptive richness and simplicity. Overloading prompts can lead to ambiguous or cluttered results.
+Guidelines:
 
-    Descriptive Yet Compact: The challenge lies in being descriptive enough to guide the AI accurately, yet compact enough to avoid overwhelming it. For instance, a prompt like, 'A serene lake, reflecting the fiery hues of sunset, bordered by shadowy hills' paints a vivid picture without unnecessary verbosity.
-    Precision in language is key in this segment of the stable diffusion styles. It's about choosing the right words that convey the most with the least, a skill that is essential in prompt optimization.
-    For example, instead of using:
-    "a light wind that can barely be felt but heard"
-    You can make it shorter:
+Be descriptive yet compact
+Choose words that convey the most with the least
+Focus on impactful elements
 
-    whispering breeze
-    More Prompt Examples:
-    Sample prompt: "Bustling marketplace at sunset, vibrant stalls, lively crowds."
+Examples:
 
-    By using descriptive yet straightforward language, this prompt sets a vivid scene of a marketplace without overcomplicating it. It's an example of how well-structured prompts can lead to dynamic and engaging AI art.
-    </image_prompting_advice>
+Instead of "a light wind that can barely be felt but heard," use "whispering breeze"
+"Bustling marketplace at sunset, vibrant stalls, lively crowds"
+
+Pro Tips for Prompt Engineering:
+
+Use Specific Art Styles: Mention particular art styles or artists for distinctive results (e.g., "in the style of Van Gogh")
+Experiment with Text Weights: Use (parentheses) to decrease emphasis or [brackets] to increase emphasis on certain words
+Incorporate Artistic Terms: Use terms like chiaroscuro, bokeh, or golden ratio to guide the AI's artistic approach
+Specify Image Parameters: Include aspect ratios, camera angles, or lighting conditions for more control
+
     Blog Content:
     {blog_content}
 
-    Provide only the image prompt, without any additional explanation or context.
+    Provide only the image prompt, without any additional explanation or context. DO NOT INCLUDE ANY WORDS INSIDE THE PICTURE.
     """
     
-    image_prompt_response = get_completion(IMAGE_PROMPT)
-    
-    # Extract the text content from the TextBlock object
-    if hasattr(image_prompt_response, 'text'):
-        image_prompt = image_prompt_response.text
-    else:
-        image_prompt = str(image_prompt_response)
-    
-    return gen_image(image_prompt), image_prompt
+    try:
+        image_prompt = get_completion(IMAGE_PROMPT, max_tokens=100)
+        blog_image_b64 = gen_image(image_prompt)
+        return blog_image_b64, image_prompt
+    except Exception as e:
+        print(f"Error in generate_blog_image: {str(e)}")
+        return None, f"An error occurred while generating the image prompt for {drug_name}. Please try again later."
 
 def lambda_handler(event, context):
     try:
-        body = json.loads(event['body'])
+        logger.info(f"Received event: {json.dumps(event)}")
+        
+        if 'body' not in event:
+            raise KeyError("'body' not found in event")
+        
+        try:
+            body = json.loads(event['body'])
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse body as JSON: {str(e)}")
+            raise
+        
+        if 'drugName' not in body or 'drugDetails' not in body:
+            raise KeyError("'drugName' or 'drugDetails' not found in body")
+        
         drug_name = body['drugName']
         drug_details = body['drugDetails']
 
+        logger.info(f"Processing request for drug: {drug_name}")
+        
         competitor_info = find_competitor_drugs(drug_name)
+        logger.info(f"Competitor info: {competitor_info[:500]}...")  # Log first 500 chars
+        
         comparison_data = compare_drugs(drug_name, drug_details, competitor_info)
+        logger.info(f"Comparison data: {comparison_data[:500]}...")  # Log first 500 chars
+        
         blog_post = generate_blog_post(drug_name, drug_details, comparison_data)
+        logger.info(f"Blog post: {blog_post[:500]}...")  # Log first 500 chars
+        
         blog_image_b64, image_prompt = generate_blog_image(drug_name, blog_post)
+        logger.info(f"Image prompt: {image_prompt}")
+
+        response_body = {
+            'blogPost': blog_post,
+            'blogImage': blog_image_b64,
+            'imagePrompt': image_prompt
+        }
+
+        logger.info(f"Response body: {json.dumps(response_body, indent=2)}")
 
         return {
             'statusCode': 200,
-            'body': json.dumps({
-                'blogPost': blog_post,
-                'blogImage': blog_image_b64
-            }),
+            'body': json.dumps(response_body),
             'headers': {
                 'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
+                'Access-Control-Allow-Origin': 'https://medbloggen.xyz',
+                'Access-Control-Allow-Headers': 'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token',
+                'Access-Control-Allow-Methods': 'POST,OPTIONS'
+            }
+        }
+    except KeyError as e:
+        logger.error(f"KeyError: {str(e)}")
+        return {
+            'statusCode': 400,
+            'body': json.dumps({'error': str(e)}),
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': 'https://medbloggen.xyz'
+            }
+        }
+    except json.JSONDecodeError as e:
+        logger.error(f"JSONDecodeError: {str(e)}")
+        return {
+            'statusCode': 400,
+            'body': json.dumps({'error': 'Invalid JSON in request body'}),
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': 'https://medbloggen.xyz'
             }
         }
     except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}", exc_info=True)
         return {
             'statusCode': 500,
             'body': json.dumps({'error': str(e)}),
             'headers': {
                 'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
+                'Access-Control-Allow-Origin': 'https://medbloggen.xyz'
             }
         }
-    
